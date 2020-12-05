@@ -19,22 +19,24 @@ namespace lib
         private int Failures = 0;
         private int Exceptions = 0;
         private readonly List<int> _ids = new List<int>();
-        private int Count = 0;
+        private static int Count = 0;
         private bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
 
         public SqlTest(string connectionString, CancellationToken cancellationToken)
         {
             _cancellationToken = cancellationToken;
             _connectionString = connectionString;
-            
-            using var connection = new SqlConnection(_connectionString);
-            connection.Open();
-            var command = new SqlCommand("SELECT Id FROM Players", connection);
-            var reader = command.ExecuteReader();
-            while (reader.Read())
+            AsyncWrapper.Wait(async () =>
             {
-                _ids.Add(reader.GetInt32(0));
-            }
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                var command = new SqlCommand("SELECT Id FROM Players", connection);
+                var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    _ids.Add(reader.GetInt32(0));
+                }
+            }, cancellationToken);
 
             Console.WriteLine($"Dapper {UseDapper}");
         }
@@ -51,10 +53,6 @@ namespace lib
                 // Cancellation has completed. Return.
                 catch (OperationCanceledException e)
                 {
-                }
-                catch (IncorrectRowReturnedException e)
-                {
-                    Interlocked.Increment(ref Failures);
                 }
                 catch (Exception e)
                 {
@@ -94,7 +92,8 @@ namespace lib
 
             if (!id.Equals(idResult))
             {
-                throw new IncorrectRowReturnedException();
+                Console.WriteLine($"Asked for [{id}] got [{idResult}]");
+                Interlocked.Increment(ref Failures);
             }
 
             Interlocked.Increment(ref Successes);
@@ -104,7 +103,7 @@ namespace lib
         {
             var result = await connection.QueryAsync<int?>(sql, new {Id = id});
             var idResult = result.SingleOrDefault();
-            if (idResult == null)
+            if (!idResult.HasValue)
             {
                 throw new RowNotFoundException();
             }
@@ -118,14 +117,20 @@ namespace lib
             var command = new SqlCommand(sql, connection);
             command.Parameters.Add(parameter);
 
-            var reader = await command.ExecuteReaderAsync(_cancellationToken);
-            if (!await reader.ReadAsync(_cancellationToken))
+            using var reader = await command.ExecuteReaderAsync(_cancellationToken);
+            int? idResult = null;
+            while (await reader.ReadAsync(_cancellationToken))
+            {
+                idResult = reader.GetInt32(0);
+                break;
+            }
+
+            if (idResult == null)
             {
                 throw new RowNotFoundException();
             }
-
-            var idResult = reader.GetInt32(0);
-            return idResult;
+            
+            return idResult.Value;
         }
     }
 }

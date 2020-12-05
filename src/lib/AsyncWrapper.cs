@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.Contracts;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -6,27 +7,37 @@ namespace lib
 {
     public static class AsyncWrapper
     {
+        public static void Wait(Func<Task> task, CancellationToken cancellationToken)
+        {
+            Wait(task(), cancellationToken);
+        }
+        
         public static void Wait(Task task, CancellationToken cancellationToken)
         {
-            SemaphoreSlim Semaphore = new SemaphoreSlim(1,1);
-            Semaphore.Wait(cancellationToken);
+            SemaphoreSlim semaphore = new SemaphoreSlim(1,1);
+            semaphore.Wait(cancellationToken);
             try
             {
-                task.ContinueWith(t => Semaphore.Release(), cancellationToken);
+                task.ContinueWith(t =>
+                {
+                    semaphore.Release();
+                }, cancellationToken);
             }
             catch (OperationCanceledException e)
             {
             }
-            if (task.IsCompleted)
+            
+            semaphore.Wait(cancellationToken);
+            
+            if (task.IsFaulted)
             {
-                throw new Exception("Task not complete. Synchonization failed.");
-            }
-            else if (task.IsFaulted)
-            {
+                Console.WriteLine($"Faulted {task.Exception.Message}");
                 throw new Exception("Task faulted", task.Exception);
             }
-            
-            Semaphore.Wait(cancellationToken);
+            if (!task.IsCompleted)
+            {
+                throw new Exception($"Task not complete. Synchronization failed. State {task.Status.ToString()}");
+            }
         }
     }
 }
