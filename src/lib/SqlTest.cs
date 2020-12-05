@@ -30,7 +30,7 @@ namespace lib
             {
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync(cancellationToken);
-                var command = new SqlCommand("SELECT Id FROM Players", connection);
+                var command = new SqlCommand("SELECT TOP 10000 Id FROM Contexts", connection);
                 var reader = await command.ExecuteReaderAsync(cancellationToken);
                 while (await reader.ReadAsync(cancellationToken))
                 {
@@ -78,7 +78,7 @@ namespace lib
             var idIndex = Random.Next(0, _ids.Count);
             var id = _ids[idIndex];
 
-            string sql = "SELECT Id, * FROM Players WHERE Id = @Id";
+            string sql = "SELECT Id, * FROM Contexts WHERE Id = @Id";
 
             int idResult;
             if (UseDapper)
