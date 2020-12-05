@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Dapper;
 using lib.Exeptions;
 using Microsoft.Data.SqlClient;
 
@@ -18,6 +20,7 @@ namespace lib
         private int Exceptions = 0;
         private readonly List<int> _ids = new List<int>();
         private int Count = 0;
+        private bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
 
         public SqlTest(string connectionString, CancellationToken cancellationToken)
         {
@@ -32,6 +35,8 @@ namespace lib
             {
                 _ids.Add(reader.GetInt32(0));
             }
+
+            Console.WriteLine($"Dapper {UseDapper}");
         }
         
         public void Run(object semaphore)
@@ -76,6 +81,39 @@ namespace lib
             var id = _ids[idIndex];
 
             string sql = "SELECT Id, * FROM Players WHERE Id = @Id";
+
+            int idResult;
+            if (UseDapper)
+            {
+                idResult = await Dapper(id, sql, connection);
+            }
+            else
+            {
+                idResult = await SqlCommand(id, sql, connection);
+            }
+
+            if (!id.Equals(idResult))
+            {
+                throw new IncorrectRowReturnedException();
+            }
+
+            Interlocked.Increment(ref Successes);
+        }
+
+        private async Task<int> Dapper(int id, string sql, SqlConnection connection)
+        {
+            var result = await connection.QueryAsync<int?>(sql, new {Id = id});
+            var idResult = result.SingleOrDefault();
+            if (idResult == null)
+            {
+                throw new RowNotFoundException();
+            }
+
+            return idResult.Value;
+        }
+
+        private async Task<int> SqlCommand(int id, string sql, SqlConnection connection)
+        {
             var parameter = new SqlParameter("Id", SqlDbType.Int) {Value = id};
             var command = new SqlCommand(sql, connection);
             command.Parameters.Add(parameter);
@@ -87,13 +125,7 @@ namespace lib
             }
 
             var idResult = reader.GetInt32(0);
-
-            if (!id.Equals(idResult))
-            {
-                throw new IncorrectRowReturnedException();
-            }
-
-            Interlocked.Increment(ref Successes);
+            return idResult;
         }
     }
 }
