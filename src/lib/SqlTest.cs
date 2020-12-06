@@ -18,55 +18,56 @@ namespace lib
         private int Successes = 0;
         private int Failures = 0;
         private int Exceptions = 0;
-        private readonly List<int> _ids = new List<int>();
+        private readonly List<string> _ids = new List<string>();
         private static int Count = 0;
-        private bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
+        private readonly bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
 
         public SqlTest(string connectionString, CancellationToken cancellationToken)
         {
             _cancellationToken = cancellationToken;
             _connectionString = connectionString;
-            AsyncWrapper.Wait(async () =>
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync(cancellationToken);
-                var command = new SqlCommand("SELECT TOP 10000 Id FROM Contexts", connection);
-                var reader = await command.ExecuteReaderAsync(cancellationToken);
-                while (await reader.ReadAsync(cancellationToken))
-                {
-                    _ids.Add(reader.GetInt32(0));
-                }
-            }, cancellationToken);
-
+            
             Console.WriteLine($"Dapper {UseDapper}");
-        }
-        
-        public void Run(object semaphore)
-        {
-            while (!_cancellationToken.IsCancellationRequested)
-            {
-                Interlocked.Increment(ref Count);
-                try
-                {
-                    AsyncWrapper.Wait(InternalRun(), _cancellationToken);
-                }
-                // Cancellation has completed. Return.
-                catch (OperationCanceledException e)
-                {
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine(e.Message);
-                    Interlocked.Increment(ref Exceptions);
-                }
 
-                if (Count % 10 == 0)
-                {
-                    Console.WriteLine($"Good {Successes} Bad {Failures} Error {Exceptions}");
-                }
+            Console.WriteLine("Loading dataset");
+            using var connection = new SqlConnection(_connectionString);
+            connection.Open();
+            var command = new SqlCommand("SELECT Id FROM Data", connection);
+            var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                _ids.Add(reader.GetString(0));
             }
 
-            ((SemaphoreSlim) semaphore).Release();
+            Console.WriteLine("Loaded dataset");
+        }
+        
+        public async Task Run(object input)
+        {
+            State state = (State) input;
+            // Console.WriteLine($"\t\tThread {state.Id} starting");
+            Interlocked.Increment(ref Count);
+            try
+            {
+                await InternalRun();
+            }
+            // Cancellation has completed. Return.
+            catch (OperationCanceledException e)
+            {
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e.Message);
+                Interlocked.Increment(ref Exceptions);
+            }
+
+            if (Count % 10 == 0)
+            {
+                Console.WriteLine($"Good {Successes} Bad {Failures} Error {Exceptions}");
+            }
+
+            state.AutoResetEvent.Set();
+            // Console.WriteLine($"\t\tThread {state.Id} ended");
         }
 
         private async Task InternalRun()
@@ -78,9 +79,9 @@ namespace lib
             var idIndex = Random.Next(0, _ids.Count);
             var id = _ids[idIndex];
 
-            string sql = "SELECT Id, * FROM Contexts WHERE Id = @Id";
+            string sql = "SELECT Id, * FROM Data WHERE Id = @Id";
 
-            int idResult;
+            string idResult;
             if (UseDapper)
             {
                 idResult = await Dapper(id, sql, connection);
@@ -99,38 +100,46 @@ namespace lib
             Interlocked.Increment(ref Successes);
         }
 
-        private async Task<int> Dapper(int id, string sql, SqlConnection connection)
+        private async Task<string> Dapper(string id, string sql, SqlConnection connection)
         {
-            var result = await connection.QueryAsync<int?>(sql, new {Id = id});
+            var result = await connection.QueryAsync<string>(sql, new {Id = id});
             var idResult = result.SingleOrDefault();
-            if (!idResult.HasValue)
+            if (string.IsNullOrEmpty(idResult))
             {
                 throw new RowNotFoundException();
             }
 
-            return idResult.Value;
+            return idResult;
         }
 
-        private async Task<int> SqlCommand(int id, string sql, SqlConnection connection)
+        private async Task<string> SqlCommand(string id, string sql, SqlConnection connection)
         {
-            var parameter = new SqlParameter("Id", SqlDbType.Int) {Value = id};
+            var parameter = new SqlParameter("Id", SqlDbType.VarChar) {Value = id};
+            
+            var tx = connection.BeginTransaction(IsolationLevel.ReadCommitted);
+            
             var command = new SqlCommand(sql, connection);
             command.Parameters.Add(parameter);
+            command.Transaction = tx;
 
-            using var reader = await command.ExecuteReaderAsync(_cancellationToken);
-            int? idResult = null;
-            while (await reader.ReadAsync(_cancellationToken))
+            string idResult = null;
+            using (var reader = await command.ExecuteReaderAsync(_cancellationToken))
             {
-                idResult = reader.GetInt32(0);
-                break;
+                while (await reader.ReadAsync(_cancellationToken))
+                {
+                    idResult = reader.GetString(0);
+                    break;
+                }
             }
+
+            tx.Commit();
 
             if (idResult == null)
             {
                 throw new RowNotFoundException();
             }
             
-            return idResult.Value;
+            return idResult;
         }
     }
 }
