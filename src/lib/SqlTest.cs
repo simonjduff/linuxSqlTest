@@ -4,9 +4,11 @@ using System.Data;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 using Dapper;
 using lib.Exeptions;
 using Microsoft.Data.SqlClient;
+using IsolationLevel = System.Data.IsolationLevel;
 
 namespace lib
 {
@@ -14,13 +16,15 @@ namespace lib
     {
         private readonly string _connectionString;
         private static readonly Random Random = new Random();
-        private CancellationToken _cancellationToken;
+        private readonly CancellationToken _cancellationToken;
         public int Successes = 0;
         public int Failures = 0;
         public int Exceptions = 0;
         private readonly List<string> _ids = new List<string>();
         private static int Count = 0;
         private readonly bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
+        private readonly SemaphoreSlim Semaphore = new SemaphoreSlim(10000, 10000);
+        private const int CommandTimeout = 2;
 
         public SqlTest(string connectionString, CancellationToken cancellationToken)
         {
@@ -44,6 +48,7 @@ namespace lib
         
         public async Task Run(object input)
         {
+            await Semaphore.WaitAsync(_cancellationToken);
             State state = (State) input;
             // Console.WriteLine($"\t\tThread {state.Id} starting");
             Interlocked.Increment(ref Count);
@@ -60,8 +65,12 @@ namespace lib
                 Console.WriteLine(e.Message);
                 Interlocked.Increment(ref Exceptions);
             }
-
-            state.AutoResetEvent.Set();
+            finally
+            {
+                state.AutoResetEvent.Set();
+                Semaphore.Release();
+            }
+            
             // Console.WriteLine($"\t\tThread {state.Id} ended");
         }
 
@@ -97,13 +106,14 @@ namespace lib
 
         private async Task<string> Dapper(string id, string sql, SqlConnection connection)
         {
-            var result = await connection.QueryAsync<string>(sql, new {Id = id});
+            var result = await connection.QueryAsync<string>(sql, 
+                new {Id = id},
+                commandTimeout:2);
             var idResult = result.SingleOrDefault();
             if (string.IsNullOrEmpty(idResult))
             {
                 throw new RowNotFoundException();
             }
-
             return idResult;
         }
 
@@ -111,11 +121,10 @@ namespace lib
         {
             var parameter = new SqlParameter("Id", SqlDbType.VarChar) {Value = id};
             
-            var tx = connection.BeginTransaction(IsolationLevel.ReadCommitted);
-            
             var command = new SqlCommand(sql, connection);
             command.Parameters.Add(parameter);
             command.Transaction = tx;
+            command.CommandTimeout = CommandTimeout;
 
             string idResult = null;
             using (var reader = await command.ExecuteReaderAsync(_cancellationToken))
@@ -126,8 +135,6 @@ namespace lib
                     break;
                 }
             }
-
-            tx.Commit();
 
             if (idResult == null)
             {
