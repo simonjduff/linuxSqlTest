@@ -15,9 +15,9 @@ namespace lib
         private readonly string _connectionString;
         private static readonly Random Random = new Random();
         private CancellationToken _cancellationToken;
-        private int Successes = 0;
-        private int Failures = 0;
-        private int Exceptions = 0;
+        public int Successes = 0;
+        public int Failures = 0;
+        public int Exceptions = 0;
         private readonly List<string> _ids = new List<string>();
         private static int Count = 0;
         private readonly bool UseDapper = bool.Parse(Environment.GetEnvironmentVariable("SQLTEST_DAPPER") ?? "False");
@@ -59,11 +59,6 @@ namespace lib
             {
                 Console.WriteLine(e.Message);
                 Interlocked.Increment(ref Exceptions);
-            }
-
-            if (Count % 10 == 0)
-            {
-                Console.WriteLine($"Good {Successes} Bad {Failures} Error {Exceptions}");
             }
 
             state.AutoResetEvent.Set();

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Threading;
+using System.Threading.Tasks;
 using lib;
 
 namespace runner
@@ -7,7 +8,7 @@ namespace runner
     class Program
     {
         private static string ConnectionString = Environment.GetEnvironmentVariable("SQLTEST_CONNECTIONSTRING");
-        private const int ThreadCount = 10000;
+        private const int ThreadCount = 100000;
         private static WaitHandle[] WaitHandles = new WaitHandle[ThreadCount];
         
         static void Main(string[] args)
@@ -20,6 +21,15 @@ namespace runner
             var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5000));
             var runner = new SqlTest(ConnectionString, cancellation.Token);
 
+            Task.Run(async () =>
+            {
+                while (true)
+                {
+                    await Task.Delay(1000);
+                    Console.WriteLine($"Good {runner.Successes} Bad {runner.Failures} Error {runner.Exceptions}");
+                }
+            });
+
             for (int i = 0; i < ThreadCount; i++)
             {
                 try
@@ -27,7 +37,6 @@ namespace runner
                     WaitHandles[i] = new AutoResetEvent(false);
                     ThreadPool.QueueUserWorkItem(async s => await runner.Run(s), 
                         new State{ Id = i, AutoResetEvent = (AutoResetEvent)WaitHandles[i]});
-                    Thread.Sleep(10);
                 }
                 catch (OperationCanceledException e)
                 {
